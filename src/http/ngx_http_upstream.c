@@ -632,9 +632,23 @@ ngx_http_upstream_init_request(ngx_http_request_t *r)
         return;
     }
 
-    if (u->conf->socket_keepalive) {
+    if (u->conf->socket_keepalive == 1) {
         u->peer.so_keepalive = 1;
     }
+
+#if (NGX_HAVE_KEEPALIVE_TUNABLE)
+    if (u->conf->tcp_keepidle) {
+        u->peer.so_keepidle = u->conf->tcp_keepidle;
+    }
+
+    if (u->conf->tcp_keepintvl) {
+        u->peer.so_keepintvl = u->conf->tcp_keepintvl;
+    }
+
+    if (u->conf->tcp_keepcnt) {
+        u->peer.so_keepcnt = u->conf->tcp_keepcnt;
+    }
+#endif
 
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
 

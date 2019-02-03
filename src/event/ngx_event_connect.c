@@ -85,6 +85,55 @@ ngx_event_connect_peer(ngx_peer_connection_t *pc)
         }
     }
 
+#if (NGX_HAVE_KEEPALIVE_TUNABLE)
+
+    if (pc->so_keepidle) {
+        value = pc->so_keepidle;
+
+#if (NGX_KEEPALIVE_FACTOR)
+        value *= NGX_KEEPALIVE_FACTOR;
+#endif
+
+        if (setsockopt(s, IPPROTO_TCP, TCP_KEEPIDLE,
+                       (const void *) &value, sizeof(int))
+            == -1)
+        {
+            ngx_log_error(NGX_LOG_ALERT, pc->log, ngx_socket_errno,
+                          "setsockopt(TCP_KEEPIDLE, %d) failed, ignored",
+                          value);
+        }
+    }
+
+    if (pc->so_keepintvl) {
+        value = pc->so_keepintvl;
+
+#if (NGX_KEEPALIVE_FACTOR)
+        value *= NGX_KEEPALIVE_FACTOR;
+#endif
+
+        if (setsockopt(s, IPPROTO_TCP, TCP_KEEPINTVL,
+                       (const void *) &value, sizeof(int))
+            == -1)
+        {
+            ngx_log_error(NGX_LOG_ALERT, pc->log, ngx_socket_errno,
+                         "setsockopt(TCP_KEEPINTVL, %d) failed, ignored",
+                         value);
+        }
+    }
+
+    if (pc->so_keepcnt) {
+        if (setsockopt(s, IPPROTO_TCP, TCP_KEEPCNT,
+                       (const void *) &pc->so_keepcnt, sizeof(int))
+            == -1)
+        {
+            ngx_log_error(NGX_LOG_ALERT, pc->log, ngx_socket_errno,
+                          "setsockopt(TCP_KEEPCNT, %d) failed, ignored",
+                          pc->so_keepcnt);
+        }
+    }
+
+#endif
+
     if (ngx_nonblocking(s) == -1) {
         ngx_log_error(NGX_LOG_ALERT, pc->log, ngx_socket_errno,
                       ngx_nonblocking_n " failed");

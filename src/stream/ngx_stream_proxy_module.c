@@ -32,7 +32,12 @@ typedef struct {
     ngx_flag_t                       next_upstream;
     ngx_flag_t                       proxy_protocol;
     ngx_stream_upstream_local_t     *local;
-    ngx_flag_t                       socket_keepalive;
+    ngx_int_t                        socket_keepalive;
+#if (NGX_HAVE_KEEPALIVE_TUNABLE)
+    ngx_int_t                        tcp_keepidle;
+    ngx_int_t                        tcp_keepintvl;
+    ngx_int_t                        tcp_keepcnt;
+#endif
 
 #if (NGX_STREAM_SSL)
     ngx_flag_t                       ssl_enable;
@@ -88,6 +93,8 @@ static char *ngx_stream_proxy_pass(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 static char *ngx_stream_proxy_bind(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
+static char *ngx_stream_proxy_socket_keepalive(ngx_conf_t *cf,
+    ngx_command_t *cmd, void *conf);
 
 #if (NGX_STREAM_SSL)
 
@@ -141,10 +148,10 @@ static ngx_command_t  ngx_stream_proxy_commands[] = {
       NULL },
 
     { ngx_string("proxy_socket_keepalive"),
-      NGX_STREAM_MAIN_CONF|NGX_STREAM_SRV_CONF|NGX_CONF_FLAG,
-      ngx_conf_set_flag_slot,
+      NGX_STREAM_MAIN_CONF|NGX_STREAM_SRV_CONF|NGX_CONF_TAKE1,
+      ngx_stream_proxy_socket_keepalive,
       NGX_STREAM_SRV_CONF_OFFSET,
-      offsetof(ngx_stream_proxy_srv_conf_t, socket_keepalive),
+      0,
       NULL },
 
     { ngx_string("proxy_connect_timeout"),
@@ -406,9 +413,23 @@ ngx_stream_proxy_handler(ngx_stream_session_t *s)
         return;
     }
 
-    if (pscf->socket_keepalive) {
+    if (pscf->socket_keepalive == 1) {
         u->peer.so_keepalive = 1;
     }
+
+#if (NGX_HAVE_KEEPALIVE_TUNABLE)
+    if (pscf->tcp_keepidle) {
+        u->peer.so_keepidle = pscf->tcp_keepidle;
+    }
+
+    if (pscf->tcp_keepintvl) {
+        u->peer.so_keepintvl = pscf->tcp_keepintvl;
+    }
+
+    if (pscf->tcp_keepcnt) {
+        u->peer.so_keepcnt = pscf->tcp_keepcnt;
+    }
+#endif
 
     u->peer.type = c->type;
     u->start_sec = ngx_time();
@@ -1973,6 +1994,11 @@ ngx_stream_proxy_create_srv_conf(ngx_conf_t *cf)
     conf->proxy_protocol = NGX_CONF_UNSET;
     conf->local = NGX_CONF_UNSET_PTR;
     conf->socket_keepalive = NGX_CONF_UNSET;
+#if (NGX_HAVE_KEEPALIVE_TUNABLE)
+    conf->tcp_keepidle = NGX_CONF_UNSET;
+    conf->tcp_keepintvl = NGX_CONF_UNSET;
+    conf->tcp_keepcnt = NGX_CONF_UNSET;
+#endif
 
 #if (NGX_STREAM_SSL)
     conf->ssl_enable = NGX_CONF_UNSET;
@@ -2028,6 +2054,17 @@ ngx_stream_proxy_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
     ngx_conf_merge_value(conf->socket_keepalive,
                               prev->socket_keepalive, 0);
+
+#if (NGX_HAVE_KEEPALIVE_TUNABLE)
+    ngx_conf_merge_value(conf->tcp_keepidle,
+                              prev->tcp_keepidle, 0);
+
+    ngx_conf_merge_value(conf->tcp_keepintvl,
+                              prev->tcp_keepintvl, 0);
+
+    ngx_conf_merge_value(conf->tcp_keepcnt,
+                              prev->tcp_keepcnt, 0);
+#endif
 
 #if (NGX_STREAM_SSL)
 
@@ -2213,6 +2250,103 @@ ngx_stream_proxy_pass(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     return NGX_CONF_OK;
 }
 
+static char *
+ngx_stream_proxy_socket_keepalive(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf)
+{
+    ngx_stream_proxy_srv_conf_t *pscf = conf;
+    ngx_str_t                   *args, *value;
+
+    args = cf->args->elts;
+    value = &args[1];
+
+    if (ngx_strcmp(value->data, "on") == 0) {
+        pscf->socket_keepalive = 1;
+
+    } else if (ngx_strcmp(value->data, "off") == 0) {
+        pscf->socket_keepalive = 2;
+
+    } else {
+
+#if (NGX_HAVE_KEEPALIVE_TUNABLE)
+        u_char    *p, *end;
+        ngx_str_t  s;
+
+        end = value->data + value->len;
+        s.data = value->data;
+
+        p = ngx_strlchr(s.data, end, ':');
+        if (p == NULL) {
+            p = end;
+        }
+
+        if (p > s.data) {
+            s.len = p - s.data;
+
+            pscf->tcp_keepidle = ngx_parse_time(&s, 1);
+            if (pscf->tcp_keepidle == (time_t) NGX_ERROR) {
+                goto invalid_so_keepalive;
+            }
+        }
+
+        s.data = (p < end) ? (p + 1) : end;
+
+        p = ngx_strlchr(s.data, end, ':');
+        if (p == NULL) {
+            p = end;
+        }
+
+        if (p > s.data) {
+            s.len = p - s.data;
+
+            pscf->tcp_keepintvl = ngx_parse_time(&s, 1);
+            if (pscf->tcp_keepintvl == (time_t) NGX_ERROR) {
+                goto invalid_so_keepalive;
+            }
+        }
+
+        s.data = (p < end) ? (p + 1) : end;
+
+        if (s.data < end) {
+            s.len = end - s.data;
+
+            pscf->tcp_keepcnt = ngx_atoi(s.data, s.len);
+            if (pscf->tcp_keepcnt == NGX_ERROR) {
+                goto invalid_so_keepalive;
+            }
+        }
+
+        if (pscf->tcp_keepidle == 0
+            && pscf->tcp_keepintvl == 0
+            && pscf->tcp_keepcnt == 0)
+        {
+            goto invalid_so_keepalive;
+        }
+
+        pscf->socket_keepalive = 1;
+
+#else
+
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "\"proxy_socket_keepalive\" accepts only \"on\" or "
+                           "\"off\" on this platform");
+        return NGX_CONF_ERROR;
+
+#endif
+    }
+
+
+    return NGX_CONF_OK;
+
+#if (NGX_HAVE_KEEPALIVE_TUNABLE)
+invalid_so_keepalive:
+
+    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                       "invalid proxy_socket_keepalive value: \"%s\"",
+                       &value->data);
+    return NGX_CONF_ERROR;
+#endif
+}
 
 static char *
 ngx_stream_proxy_bind(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)

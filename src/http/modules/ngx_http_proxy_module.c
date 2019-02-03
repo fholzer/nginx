@@ -182,6 +182,8 @@ static char *ngx_http_proxy_cookie_path(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 static char *ngx_http_proxy_store(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
+static char *ngx_http_proxy_socket_keepalive(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf);
 #if (NGX_HTTP_CACHE)
 static char *ngx_http_proxy_cache(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
@@ -325,10 +327,10 @@ static ngx_command_t  ngx_http_proxy_commands[] = {
       NULL },
 
     { ngx_string("proxy_socket_keepalive"),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG,
-      ngx_conf_set_flag_slot,
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_http_proxy_socket_keepalive,
       NGX_HTTP_LOC_CONF_OFFSET,
-      offsetof(ngx_http_proxy_loc_conf_t, upstream.socket_keepalive),
+      0,
       NULL },
 
     { ngx_string("proxy_connect_timeout"),
@@ -2841,6 +2843,11 @@ ngx_http_proxy_create_loc_conf(ngx_conf_t *cf)
 
     conf->upstream.local = NGX_CONF_UNSET_PTR;
     conf->upstream.socket_keepalive = NGX_CONF_UNSET;
+#if (NGX_HAVE_KEEPALIVE_TUNABLE)
+    conf->upstream.tcp_keepidle = NGX_CONF_UNSET;
+    conf->upstream.tcp_keepintvl = NGX_CONF_UNSET;
+    conf->upstream.tcp_keepcnt = NGX_CONF_UNSET;
+#endif
 
     conf->upstream.connect_timeout = NGX_CONF_UNSET_MSEC;
     conf->upstream.send_timeout = NGX_CONF_UNSET_MSEC;
@@ -2963,6 +2970,17 @@ ngx_http_proxy_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 
     ngx_conf_merge_value(conf->upstream.socket_keepalive,
                               prev->upstream.socket_keepalive, 0);
+
+#if (NGX_HAVE_KEEPALIVE_TUNABLE)
+    ngx_conf_merge_value(conf->upstream.tcp_keepidle,
+                              prev->upstream.tcp_keepidle, 0);
+
+    ngx_conf_merge_value(conf->upstream.tcp_keepintvl,
+                              prev->upstream.tcp_keepintvl, 0);
+
+    ngx_conf_merge_value(conf->upstream.tcp_keepcnt,
+                              prev->upstream.tcp_keepcnt, 0);
+#endif
 
     ngx_conf_merge_msec_value(conf->upstream.connect_timeout,
                               prev->upstream.connect_timeout, 60000);
@@ -4245,6 +4263,103 @@ ngx_http_proxy_lowat_check(ngx_conf_t *cf, void *post, void *data)
 #endif
 
     return NGX_CONF_OK;
+}
+
+static char *
+ngx_http_proxy_socket_keepalive(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_http_proxy_loc_conf_t *plcf = conf;
+    ngx_str_t                 *args, *value;
+
+    args = cf->args->elts;
+    value = &args[1];
+
+    if (ngx_strcmp(value->data, "on") == 0) {
+        plcf->upstream.socket_keepalive = 1;
+
+    } else if (ngx_strcmp(value->data, "off") == 0) {
+        plcf->upstream.socket_keepalive = 2;
+
+    } else {
+
+#if (NGX_HAVE_KEEPALIVE_TUNABLE)
+        u_char    *p, *end;
+        ngx_str_t  s;
+
+        end = value->data + value->len;
+        s.data = value->data;
+
+        p = ngx_strlchr(s.data, end, ':');
+        if (p == NULL) {
+            p = end;
+        }
+
+        if (p > s.data) {
+            s.len = p - s.data;
+
+            plcf->upstream.tcp_keepidle = ngx_parse_time(&s, 1);
+            if (plcf->upstream.tcp_keepidle == (time_t) NGX_ERROR) {
+                goto invalid_so_keepalive;
+            }
+        }
+
+        s.data = (p < end) ? (p + 1) : end;
+
+        p = ngx_strlchr(s.data, end, ':');
+        if (p == NULL) {
+            p = end;
+        }
+
+        if (p > s.data) {
+            s.len = p - s.data;
+
+            plcf->upstream.tcp_keepintvl = ngx_parse_time(&s, 1);
+            if (plcf->upstream.tcp_keepintvl == (time_t) NGX_ERROR) {
+                goto invalid_so_keepalive;
+            }
+        }
+
+        s.data = (p < end) ? (p + 1) : end;
+
+        if (s.data < end) {
+            s.len = end - s.data;
+
+            plcf->upstream.tcp_keepcnt = ngx_atoi(s.data, s.len);
+            if (plcf->upstream.tcp_keepcnt == NGX_ERROR) {
+                goto invalid_so_keepalive;
+            }
+        }
+
+        if (plcf->upstream.tcp_keepidle == 0
+            && plcf->upstream.tcp_keepintvl == 0
+            && plcf->upstream.tcp_keepcnt == 0)
+        {
+            goto invalid_so_keepalive;
+        }
+
+        plcf->upstream.socket_keepalive = 1;
+
+#else
+
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "\"proxy_socket_keepalive\" accepts only \"on\" or "
+                           "\"off\" on this platform");
+        return NGX_CONF_ERROR;
+
+#endif
+    }
+
+
+    return NGX_CONF_OK;
+
+#if (NGX_HAVE_KEEPALIVE_TUNABLE)
+invalid_so_keepalive:
+
+    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                       "invalid proxy_socket_keepalive value: \"%s\"",
+                       &value->data);
+    return NGX_CONF_ERROR;
+#endif
 }
 
 

@@ -63,6 +63,11 @@ struct ngx_peer_connection_s {
     unsigned                         cached:1;
     unsigned                         transparent:1;
     unsigned                         so_keepalive:1;
+#if (NGX_HAVE_KEEPALIVE_TUNABLE)
+    int                              so_keepidle;
+    int                              so_keepintvl;
+    int                              so_keepcnt;
+#endif
     unsigned                         down:1;
 
                                      /* ngx_connection_log_error_e */
